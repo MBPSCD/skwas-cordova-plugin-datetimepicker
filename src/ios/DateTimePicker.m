@@ -5,6 +5,12 @@
 
 @interface DateTimePicker() // (Private)
 
+typedef NS_ENUM(NSInteger, CallbackType) {
+    ValueChange,
+    ClickDone,
+    ClickClear
+};
+
 // Configures the UIDatePicker with the NSMutableDictionary options.
 - (void)configureDatePicker:(NSMutableDictionary *)optionsOrNil datePicker:(UIDatePicker *)datePicker;
 
@@ -13,6 +19,8 @@
 
 @implementation DateTimePicker {
     BOOL _isVisible;
+    BOOL _isValue;
+    CallbackType _callbackType;
     NSString *_callbackId;
 }
 
@@ -34,18 +42,16 @@
     NSMutableDictionary *optionsOrNil = [command.arguments objectAtIndex:command.arguments.count - 1];
 
     [self configureDatePicker:optionsOrNil datePicker:self.modalPicker.datePicker];
-
-    // Present the view with our custom transition.
+    
     [self.viewController presentViewController:self.modalPicker animated:YES completion:nil];
 
     _isVisible = YES;
+    _isValue = YES;
 }
 
 - (void)hide:(CDVInvokedUrlCommand*)command {
     if (_isVisible) {
-        // Hide the view with our custom transition.
         [self.modalPicker dismissViewControllerAnimated:true completion:nil];
-        [self callbackCancelWithJavascript];
         _isVisible = NO;
     }
 
@@ -77,25 +83,36 @@
     picker.transitioningDelegate = self;
 
     picker.doneHandler = ^(id sender) {
-        ModalPickerViewController *modelPicker = (ModalPickerViewController *)sender;
-        if (modelPicker == nil) {
-            [self callbackSuccessWithJavascript:nil];
-        } else {
-            [self callbackSuccessWithJavascript:modelPicker.datePicker.date];
+        self->_callbackType = ClickDone;
+        
+        if(self->_isValue){
+            ModalPickerViewController *modelPicker = (ModalPickerViewController *)sender;
+            
+            [self sendPluginResult:modelPicker.datePicker.date];
+        }else{
+            [self sendPluginResult:nil];
         }
-        _isVisible = NO;
+
+        self->_isVisible = NO;
     };
 
-    picker.cancelHandler = ^() {
-        [self callbackCancelWithJavascript];
-        _isVisible = NO;
+    picker.clearHandler = ^(id sender) {
+        self->_callbackType = ClickClear;
+        
+        if(self->_isValue){
+            [self sendPluginResult: nil];
+            self->_isValue = NO;
+            self->_isVisible = YES;
+        }
     };
+
+    [picker.datePicker addTarget:self action:@selector(datePickerValueChange:) forControlEvents:UIControlEventValueChanged];
 
     self.modalPicker = picker;
 }
 
-- (void)configureDatePicker:(NSMutableDictionary *)optionsOrNil datePicker:(UIDatePicker *)datePicker {
-    
+- (void)configureDatePicker:(NSMutableDictionary*)optionsOrNil datePicker:(UIDatePicker *)datePicker {
+
     // Prefer wheels style on iOS 14.
     if (@available(iOS 13.4, *)) {
         datePicker.preferredDatePickerStyle = UIDatePickerStyleWheels;
@@ -110,25 +127,24 @@
     } else {
         datePicker.datePickerMode = UIDatePickerModeDateAndTime;
     }
-   
+
     // Locale.
     NSString *localeString = [optionsOrNil objectForKeyNotNull:@"locale"];
     datePicker.locale = localeString.length > 0 ? [[NSLocale alloc] initWithLocaleIdentifier:localeString] : [NSLocale currentLocale];
-    
+
     // Texts.
     self.modalPicker.doneText = [optionsOrNil objectForKeyNotNull:@"okText"];
-    self.modalPicker.cancelText = [optionsOrNil objectForKeyNotNull:@"cancelText"];
     self.modalPicker.clearText = [optionsOrNil objectForKeyNotNull:@"clearText"];
     self.modalPicker.titleText = [optionsOrNil objectForKeyNotNull:@"titleText"];
 
     // Minute interval.
     NSInteger minuteInterval = [[optionsOrNil objectForKeyNotNull:@"minuteInterval"] ?: [NSNumber numberWithInt:1] intValue];
     datePicker.minuteInterval = minuteInterval;
-    
+
     // Allow old/future dates.
     BOOL allowOldDates = [[optionsOrNil objectForKeyNotNull:@"allowOldDates"] ?: [NSNumber numberWithInt:1] boolValue];
     BOOL allowFutureDates = [[optionsOrNil objectForKeyNotNull:@"allowFutureDates"] ?: [NSNumber numberWithInt:1] boolValue];
-    
+
     // Min/max dates.
     NSDate *today = [NSDate today];
     long long todayTicks = ((long long)[today timeIntervalSince1970]) * DDBIntervalFactor;
@@ -146,31 +162,52 @@
     } else {
         datePicker.maximumDate = nil;
     }
-    
+
     // Selected date.
     long long ticks = [[optionsOrNil objectForKey:@"ticks"] longLongValue];
     [datePicker setDate:[[NSDate dateWithTimeIntervalSince1970:(ticks / DDBIntervalFactor)] roundToMinuteInterval:minuteInterval] animated:FALSE];
 }
 
-// Sends the date to the plugin javascript handler.
-- (void)callbackSuccessWithJavascript:(NSDate *)date {
+- (void)datePickerValueChange:(UIDatePicker *)datePicker{
+    _callbackType = ValueChange;
+    _isValue = YES;
+    
+    [self sendPluginResult:datePicker.date];
+}
+
+- (NSString*)getDatePickString:(NSDate*)date{
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    
+    if(self.modalPicker.datePicker.datePickerMode == UIDatePickerModeDate){
+        [formatter setDateFormat:@"yyyy-MM-dd"];
+    }
+    
+    if(self.modalPicker.datePicker.datePickerMode == UIDatePickerModeTime){
+        [formatter setDateFormat:@"HH:mm:ss"];
+    }
+    
+    if(self.modalPicker.datePicker.datePickerMode == UIDatePickerModeDateAndTime){
+        [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss"];
+    }
+    
+    return [formatter stringFromDate:date];
+}
+
+- (void)sendPluginResult:(NSDate*)date{
     NSMutableDictionary *result = [[NSMutableDictionary alloc] init];
-    // When date is nil, user clicked 'clear' button so we dispatch success without ticks in that case.
-    if (date != nil) {
-        long long ticks = ((long long)[date timeIntervalSince1970]) * DDBIntervalFactor;
-        [result setObject:[NSNumber numberWithLongLong:ticks] forKey:@"ticks"];
+    
+    [result setObject:[NSNumber numberWithInt:(int)_callbackType] forKey:@"callbackType"];
+    
+    if(date != nil){
+        [result setObject:[self getDatePickString:date] forKey:@"ticks"];
+    }else{
+        [result setObject:@"" forKey:@"ticks"];
     }
     
     CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
-    [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
-}
 
-// Sends a cancellation notification to the plugin javascript handler.
-- (void)callbackCancelWithJavascript {
-    NSMutableDictionary *result = [[NSMutableDictionary alloc] init];
-    [result setObject:[NSNumber numberWithBool:YES] forKey:@"cancelled"];
+    [pluginResult setKeepCallbackAsBool:YES];
 
-    CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
 }
 
