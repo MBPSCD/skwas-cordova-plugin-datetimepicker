@@ -115,7 +115,8 @@ typedef NS_ENUM(NSInteger, CallbackType) {
 
     // Prefer wheels style on iOS 14.
     if (@available(iOS 13.4, *)) {
-        datePicker.preferredDatePickerStyle = UIDatePickerStyleWheels;
+//        datePicker.preferredDatePickerStyle = UIDatePickerStyleWheels;
+        [datePicker setValue:[NSNumber numberWithInt:1] forKey:@"preferredDatePickerStyle"];
     }
     
     // Mode (must be set first, otherwise minuteInterval > 1 acts wonky).
